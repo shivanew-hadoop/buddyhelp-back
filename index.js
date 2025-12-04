@@ -94,13 +94,33 @@ app.post("/login", async (req, res) => {
 /* ----------------------------------------------------
    ADMIN: Get All Users
 ---------------------------------------------------- */
+// Admin get users
 app.get("/admin/users", async (req, res) => {
-  const { data } = await supabaseAdmin
+  const { data: meta, error } = await supabaseAdmin
     .from("user_meta")
-    .select("*, credits(remaining_seconds)");
+    .select("*");
 
-  res.json({ users: data });
+  if (error) return res.status(500).json({ error });
+
+  // fetch credits manually for each user (safe method)
+  const users = [];
+
+  for (const row of meta) {
+    const { data: credit } = await supabaseAdmin
+      .from("credits")
+      .select("remaining_seconds")
+      .eq("user_id", row.id)
+      .single();
+
+    users.push({
+      ...row,
+      credits: credit || { remaining_seconds: 0 }
+    });
+  }
+
+  return res.json({ users });
 });
+
 
 /* ----------------------------------------------------
    ADMIN: Approve
