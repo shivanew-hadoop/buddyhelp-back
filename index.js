@@ -210,6 +210,39 @@ app.post("/chat", async (req, res) => {
   res.end();
 });
 
+// TEMPORARY — Create ADMIN account manually
+app.post("/create-admin", async (req, res) => {
+  const email = "shiva.nelikanti@gmail.com";
+  const password = "Shavi@1234";
+
+  // 1. Create user in Supabase Auth
+  const { data: user, error } = await supabase.auth.signUp({
+    email,
+    password
+  });
+
+  if (error) return res.status(400).json({ error });
+
+  // 2. Add admin row in user_meta
+  await supabaseAdmin.from("user_meta").insert([
+    {
+      id: user.user.id,
+      name: "Admin User",
+      phone: "00000",
+      country: "Admin",
+      status: "ACTIVE"
+    }
+  ]);
+
+  // 3. Give unlimited credits
+  await supabaseAdmin.from("credits").insert([
+    { user_id: user.user.id, remaining_seconds: 999999 }
+  ]);
+
+  return res.json({ success: true, adminId: user.user.id });
+});
+
+
 /* ----------------------------------------------------
    Start Server
 ---------------------------------------------------- */
