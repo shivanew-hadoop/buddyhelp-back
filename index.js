@@ -4,35 +4,57 @@ import multer from "multer";
 import dotenv from "dotenv";
 import { supabase, supabaseAdmin } from "./supabase.js";
 import OpenAI from "openai";
+import fetch from "node-fetch";  // IMPORTANT for keep-alive ping
 
 dotenv.config();
 
 const app = express();
 
 /* ----------------------------------------------------
-   FIXED: Render-safe CORS (prevents pending requests)
+   KEEP RENDER SERVER ALIVE (Prevents 503 cold-start)
+---------------------------------------------------- */
+setInterval(() => {
+  fetch("https://buddyhelp-backend.onrender.com/health").catch(() => {});
+}, 300000); // ping every 5 min
+
+/* ----------------------------------------------------
+   CORS — FIXED FOR GITHUB PAGES
 ---------------------------------------------------- */
 app.use(
   cors({
-    origin: "*",
+    origin: [
+      "http://localhost:3000",
+      "http://localhost:5500",
+      "http://127.0.0.1:5500",
+      "https://shivanew-hadoop.github.io",
+      "https://shivanew-hadoop.github.io/buddyhelp-frontend"
+    ],
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
+    credentials: true
   })
 );
 
-// Handle preflight requests explicitly
-app.options("*", cors());
+// Explicit preflight
+app.options("*", (req, res) => {
+  res.header("Access-Control-Allow-Origin", req.headers.origin);
+  res.header(
+    "Access-Control-Allow-Methods",
+    "GET, POST, PUT, DELETE, OPTIONS"
+  );
+  res.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  res.sendStatus(200);
+});
 
 /* ----------------------------------------------------
    Middleware
 ---------------------------------------------------- */
 app.use(express.json());
 const upload = multer({ storage: multer.memoryStorage() });
-
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 /* ----------------------------------------------------
-   Health Check (REQUIRED BY RENDER)
+   Health Check
 ---------------------------------------------------- */
 app.get("/health", (req, res) => {
   res.status(200).send("OK");
@@ -64,23 +86,18 @@ app.post("/signup", async (req, res) => {
 });
 
 /* ----------------------------------------------------
-   LOGIN
----------------------------------------------------- */
-/* ----------------------------------------------------
-   LOGIN  (FINAL – DROP-IN REPLACEMENT)
+   LOGIN  (FINAL WORKING VERSION)
 ---------------------------------------------------- */
 app.post("/login", async (req, res) => {
   try {
     const { email, password } = req.body;
 
-    // Sign in using Supabase Auth
     const { data, error } = await supabase.auth.signInWithPassword({ email, password });
     if (error) return res.status(400).json({ error: "Invalid login" });
 
     const user = data.user;
     const uid = user.id;
 
-    // Fetch user_meta row
     const { data: meta, error: metaErr } = await supabaseAdmin
       .from("user_meta")
       .select("*")
@@ -88,18 +105,15 @@ app.post("/login", async (req, res) => {
       .single();
 
     if (metaErr) return res.json({ error: "User profile not found" });
-
     if (meta.status === "PENDING") return res.json({ error: "Pending approval" });
     if (meta.status === "BLOCKED") return res.json({ error: "Blocked by admin" });
 
-    // Fetch credits for this user
     const { data: credit } = await supabaseAdmin
       .from("credits")
       .select("remaining_seconds")
       .eq("user_id", uid)
       .single();
 
-    // SEND FULL RESPONSE EXPECTED BY FRONTEND
     return res.json({
       token: data.session.access_token,
       user: {
@@ -119,11 +133,9 @@ app.post("/login", async (req, res) => {
   }
 });
 
-
 /* ----------------------------------------------------
    ADMIN: Get All Users
 ---------------------------------------------------- */
-// Admin get users
 app.get("/admin/users", async (req, res) => {
   const { data: meta, error } = await supabaseAdmin
     .from("user_meta")
@@ -131,7 +143,6 @@ app.get("/admin/users", async (req, res) => {
 
   if (error) return res.status(500).json({ error });
 
-  // fetch credits manually for each user (safe method)
   const users = [];
 
   for (const row of meta) {
@@ -149,7 +160,6 @@ app.get("/admin/users", async (req, res) => {
 
   return res.json({ users });
 });
-
 
 /* ----------------------------------------------------
    ADMIN: Approve
@@ -176,10 +186,13 @@ app.post("/admin/add-credits", async (req, res) => {
     .single();
 
   if (!data) {
-    await supabaseAdmin.from("credits")
-      .insert({ user_id: userId, remaining_seconds: seconds });
+    await supabaseAdmin.from("credits").insert({
+      user_id: userId,
+      remaining_seconds: seconds
+    });
   } else {
-    await supabaseAdmin.from("credits")
+    await supabaseAdmin
+      .from("credits")
       .update({ remaining_seconds: data.remaining_seconds + seconds })
       .eq("user_id", userId);
   }
@@ -188,7 +201,7 @@ app.post("/admin/add-credits", async (req, res) => {
 });
 
 /* ----------------------------------------------------
-   Check Credits
+   Credits Check
 ---------------------------------------------------- */
 app.get("/credits/:uid", async (req, res) => {
   const { data } = await supabaseAdmin
@@ -201,7 +214,7 @@ app.get("/credits/:uid", async (req, res) => {
 });
 
 /* ----------------------------------------------------
-   Tick (deduct credit)
+   Tick Credit
 ---------------------------------------------------- */
 app.post("/tick", async (req, res) => {
   const { userId } = req.body;
@@ -215,7 +228,8 @@ app.post("/tick", async (req, res) => {
   if (data.remaining_seconds <= 0)
     return res.json({ exhausted: true });
 
-  await supabaseAdmin.from("credits")
+  await supabaseAdmin
+    .from("credits")
     .update({ remaining_seconds: data.remaining_seconds - 1 })
     .eq("user_id", userId);
 
@@ -223,7 +237,7 @@ app.post("/tick", async (req, res) => {
 });
 
 /* ----------------------------------------------------
-   Whisper (Audio Transcription)
+   Whisper Audio → Text
 ---------------------------------------------------- */
 app.post("/whisper", upload.single("audio"), async (req, res) => {
   const f = req.file;
@@ -239,7 +253,7 @@ app.post("/whisper", upload.single("audio"), async (req, res) => {
 });
 
 /* ----------------------------------------------------
-   Chat
+   Chat (stream)
 ---------------------------------------------------- */
 app.post("/chat", async (req, res) => {
   const { prompt } = req.body;
@@ -259,20 +273,16 @@ app.post("/chat", async (req, res) => {
   res.end();
 });
 
-// TEMPORARY — Create ADMIN account manually
+/* ----------------------------------------------------
+   TEMP: Create Admin
+---------------------------------------------------- */
 app.post("/create-admin", async (req, res) => {
   const email = "shiva.nelikanti@gmail.com";
   const password = "Shavi@1234";
 
-  // 1. Create user in Supabase Auth
-  const { data: user, error } = await supabase.auth.signUp({
-    email,
-    password
-  });
-
+  const { data: user, error } = await supabase.auth.signUp({ email, password });
   if (error) return res.status(400).json({ error });
 
-  // 2. Add admin row in user_meta
   await supabaseAdmin.from("user_meta").insert([
     {
       id: user.user.id,
@@ -283,14 +293,12 @@ app.post("/create-admin", async (req, res) => {
     }
   ]);
 
-  // 3. Give unlimited credits
   await supabaseAdmin.from("credits").insert([
     { user_id: user.user.id, remaining_seconds: 999999 }
   ]);
 
-  return res.json({ success: true, adminId: user.user.id });
+  res.json({ success: true, adminId: user.user.id });
 });
-
 
 /* ----------------------------------------------------
    Start Server
