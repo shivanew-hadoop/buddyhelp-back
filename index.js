@@ -66,30 +66,59 @@ app.post("/signup", async (req, res) => {
 /* ----------------------------------------------------
    LOGIN
 ---------------------------------------------------- */
+/* ----------------------------------------------------
+   LOGIN  (FINAL – DROP-IN REPLACEMENT)
+---------------------------------------------------- */
 app.post("/login", async (req, res) => {
   try {
     const { email, password } = req.body;
 
+    // Sign in using Supabase Auth
     const { data, error } = await supabase.auth.signInWithPassword({ email, password });
     if (error) return res.status(400).json({ error: "Invalid login" });
 
-    const uid = data.user.id;
+    const user = data.user;
+    const uid = user.id;
 
-    const { data: meta } = await supabaseAdmin
+    // Fetch user_meta row
+    const { data: meta, error: metaErr } = await supabaseAdmin
       .from("user_meta")
       .select("*")
       .eq("id", uid)
       .single();
 
+    if (metaErr) return res.json({ error: "User profile not found" });
+
     if (meta.status === "PENDING") return res.json({ error: "Pending approval" });
     if (meta.status === "BLOCKED") return res.json({ error: "Blocked by admin" });
 
-    res.json({ token: data.session.access_token, userId: uid });
-  } catch (e) {
-    console.error(e);
-    res.status(500).json({ error: "Login failed" });
+    // Fetch credits for this user
+    const { data: credit } = await supabaseAdmin
+      .from("credits")
+      .select("remaining_seconds")
+      .eq("user_id", uid)
+      .single();
+
+    // SEND FULL RESPONSE EXPECTED BY FRONTEND
+    return res.json({
+      token: data.session.access_token,
+      user: {
+        id: uid,
+        email: user.email,
+        name: meta.name,
+        phone: meta.phone,
+        country: meta.country,
+        status: meta.status,
+        credits: credit?.remaining_seconds || 0
+      }
+    });
+
+  } catch (err) {
+    console.error("LOGIN ERROR:", err);
+    return res.status(500).json({ error: "Login failed" });
   }
 });
+
 
 /* ----------------------------------------------------
    ADMIN: Get All Users
